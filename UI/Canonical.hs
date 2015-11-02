@@ -325,11 +325,31 @@ type UILogin initial attempt attempting failed succeeded t =
     initial :>- attempt ->: attempting :>-- failed    -->: R
                                        :>-- succeeded -->: t
 
-uiLogin :: Int -> InterpretedUI (UILogin Int (Int, String) () () String (Singleton ())) IO Void
-uiLogin = ui (\(i, str) -> ui ((\() -> uiLogin (i + 1))
-                              .*. (\str -> ui return (\() -> let q = getLine >>= \str -> putStrLn ("Echo " ++ str) >> q in q) ())
+echo :: String -> InterpretedUI (Singleton ()) IO Void
+echo = \str -> ui return (\() -> let q = getLine >>= \str -> putStrLn ("Echo " ++ str) >> q in q) ()
+
+
+uiLogin
+    :: (String -> InterpretedUI (Singleton ()) IO Void)
+    -> Int
+    -> InterpretedUI (UILogin Int (Int, String) () () String (Singleton ())) IO Void
+uiLogin singletonUI = ui (\(i, str) -> ui (   (\() -> uiLogin singletonUI (i + 1))
+                                          .*. singletonUI
+                                          )
+                                          (\() -> if str == "foo" then return (inject two "foo") else return (inject one ()))
+                                          ()
+                         )
+                         (\i -> putStrLn ("Attempt " ++ (show i)) >> getLine >>= \str -> return (i, str))
+
+type UILoginMaybe initial attempt attempting failed succeeded t =
+    (succeeded :+: ()) :>- succeeded ->: t
+                       :>- ()        ->: Close (UILogin initial attempt attempting failed succeeded t)
+
+uiMaybeLogin
+    :: (String -> InterpretedUI (Singleton ()) IO Void)
+    -> (String :+: ())
+    -> InterpretedUI (UILoginMaybe Int (Int, String) () () String (Singleton ())) IO Void
+uiMaybeLogin singletonUI = ui (   singletonUI
+                              .*. (\() -> uiLogin singletonUI 1)
                               )
-                              (\() -> if str == "foo" then return (inject two "foo") else return (inject one ()))
-                              ()
-             )
-             (\i -> putStrLn ("Attempt " ++ (show i)) >> getLine >>= \str -> return (i, str))
+                              return
