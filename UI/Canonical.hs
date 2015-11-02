@@ -48,6 +48,9 @@ module UI.Canonical (
     , InterpretedUI
     , runInterpretedUI
 
+
+    , UITransitionFunctionT
+
     ) where
 
 import GHC.TypeLits
@@ -173,6 +176,25 @@ type family UITransitionFunctionMonoQT_ (t :: *) (t' :: *) (m :: * -> *) (r :: *
            (e -> InterpretedUI (N '(node, edges)) m r)
         -> UITransitionFunctionMonoQT_ (N '(node, edges)) (T rest) m r
 
+-- | Replace @R@s with the original UI @t@.
+--   For other UIs (constructed with @N@) we defer to
+--   UITransitionTypeParameterRec which processes each edge. That in turn uses
+--   UITransitionTypeParameterGuarded, which replaces @R@s with @Close t@.
+--   This is very important. See the note on UITransitionTypeParameterGuarded.
+--
+--   We also strip off the @Close@ constructor. But is this the right thing
+--   to do? TBD
+type family UITransitionTypeParameter (t :: *) (q :: *) :: * where
+    UITransitionTypeParameter t R = t
+    UITransitionTypeParameter t (Close r) = r
+    UITransitionTypeParameter t (N '(node, T edges)) = N '(node, T (UITransitionTypeParameterRec t edges))
+
+type family UITransitionTypeParameterRec (t :: *) (es :: [(*, *)]) :: [(*, *)] where
+    UITransitionTypeParameterRec t '[] = '[]
+    UITransitionTypeParameterRec t ( '(node, e) ': rest ) =
+           '(node, UITransitionTypeParameterGuarded t e)
+        ': (UITransitionTypeParameterRec t rest)
+
 -- | This is how we achieve recursion: the R type becomes Close over the
 --   original t.
 --   The Close constructor stops recursion; we do not R-replacement under a
@@ -219,17 +241,13 @@ type family UITransitionFunctionMonoQT_ (t :: *) (t' :: *) (m :: * -> *) (r :: *
 --
 --   The R is safely tucked away behind the Close, always pointing back to
 --   the intended place.
-type family UITransitionTypeParameter (t :: *) (q :: *) :: * where
-    UITransitionTypeParameter t R = Close t
+type family UITransitionTypeParameterGuarded (t :: *) (q :: *) :: * where
+    UITransitionTypeParameterGuarded t R = Close t
     -- When we encounter an R we add a Close, but when we enounter a Close
     -- we strip it; we do not want the user to have to create an InterpretedUI
     -- for a Close <something>.
-    UITransitionTypeParameter t (Close (N '(node, T edges))) = (N '(node, T edges))
-    UITransitionTypeParameter t (N '(node, T edges)) = N '(node, T (UITransitionTypeParameterRec t edges))
-
-type family UITransitionTypeParameterRec (t :: *) (es :: [(*, *)]) :: [(*, *)] where
-    UITransitionTypeParameterRec t '[] = '[]
-    UITransitionTypeParameterRec t ( '(node, e) ': rest ) = '(node, UITransitionTypeParameter t e) ': UITransitionTypeParameterRec t rest
+    UITransitionTypeParameterGuarded t (Close (N '(node, T edges))) = (N '(node, T edges))
+    UITransitionTypeParameterGuarded t (N '(node, T edges)) = N '(node, T (UITransitionTypeParameterRec t edges))
 
 -- | With this class we can alter the codomain of every function parameter in
 --   the UITransitionFunctionT. It's useful because those transitions functions
@@ -425,6 +443,23 @@ instance {-# OVERLAPS #-}
             f'' = reparameterize f' :: UITransitionFunctionT (N '(node, T edges)) m r
         in  f''
 
+{-
+ - You should never have to makeUI for a (Close ui)
+instance
+    ( UI ui m r
+    , MapThroughArrows (UITransitionFunctionT ui m r)
+                       (UITransitionFunctionT (Close ui) m r)
+                       (InterpretedUI ui m r)
+                       (InterpretedUI (Close ui) m r)
+    ) => UI (Close ui) m r
+  where
+    makeUI _ proxyM proxyR =
+        let ui = makeUI (Proxy :: Proxy ui) proxyM proxyR
+            reinterpret :: InterpretedUI ui m r -> InterpretedUI (Close ui) m r
+            reinterpret = reinterpretUI
+        in  mapThroughArrows reinterpret ui
+-}
+
 class AutoUI (f :: *) where
     autoUI :: f
 
@@ -474,6 +509,21 @@ infixl 6 :>---
 
 type x :>---- y = Transition x y
 infixl 8 :>----
+
+-- Want to say that if you have a UX which can produce a d, then you can
+-- give a Maybe d and always get a d.
+--
+-- No... this just seems weird. We want to say that the output UI r has
+-- t as an input type. But how can we write that?!?!
+type UIMaybe t r = Maybe t :>- t  ->: r
+                           :>- () ->: r
+
+runUIMaybe
+    :: (t -> InterpretedUX s m r)
+    -> 
+    -> InterpretedUI (UIMaybe t s) m r
+runUIMaybe runS runNothing = autoUI (runS)
+                                    (\() -> runNothing)
 
 {-
 
